@@ -1,115 +1,320 @@
-import 'package:flutter/material.dart';
+import 'dart:math';
 
-void main() {
+import 'package:dgame/game/game.dart';
+import 'package:dgame/pages/hpage.dart';
+import 'package:flame/flame.dart';
+import 'package:flame/game.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uuid/uuid.dart';
+
+void main() async {
+  await Supabase.initialize(
+    url: 'https://jojfgaifnylhhvjiizay.supabase.co',
+    anonKey:
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpvamZnYWlmbnlsaGh2amlpemF5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE2Nzg3ODQyODQsImV4cCI6MTk5NDM2MDI4NH0.MPRmh1z1xGIQ4V0whNwIhOzuoPWPHpERBJn2YJKVj8o',
+    realtimeClientOptions: const RealtimeClientOptions(eventsPerSecond: 40),
+  );
+  Flame.device.fullScreen();
   runApp(const MyApp());
 }
+
+final supabase = Supabase.instance.client;
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
-        primarySwatch: Colors.blue,
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+    return const MaterialApp(
+      title: 'UFO Shooting Game',
+      debugShowCheckedModeBanner: false,
+      // home: GamePage(),
+      home: HPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class GamePage extends StatefulWidget {
+  const GamePage({Key? key}) : super(key: key);
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<GamePage> createState() => _GamePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _GamePageState extends State<GamePage> {
+  late final MyGame _game;
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  /// Holds the RealtimeChannel to sync game states
+  RealtimeChannel? _gameChannel;
+  String networklatency = "Something";
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Image.asset('assets/images/background.jpg', fit: BoxFit.cover),
+          GameWidget(game: _game),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _initialize();
+  }
+
+  Future<void> _initialize() async {
+    _game = MyGame(
+      onGameStateUpdate: (
+        position,
+        health,
+        defence,
+      ) async {
+        ChannelResponse response;
+
+        do {
+          response = await _gameChannel!.send(
+            type: RealtimeListenTypes.broadcast,
+            event: 'game_state',
+            payload: {
+              'x': position.x,
+              'y': position.y,
+              'health': health,
+              "defense": defence,
+            },
+          );
+          print("this is the response ${response}");
+          // wait for a frame to avoid infinite rate limiting loops
+          await Future.delayed(Duration.zero);
+          setState(() {});
+        } while (response == ChannelResponse.rateLimited && health <= 0);
+      },
+      onGameOver: (playerWon) async {
+        if (playerWon) {
+          final updates = {
+            "winner": "transactionIDofPlayer__(Vinayak)",
+          };
+          try {
+            await supabase.from('games').upsert(updates);
+            if (mounted) {
+              print("updates send to Supabase");
+              // context.showSnackBar(
+              //     message: 'Successfully updated profile!');
+            }
+          } on PostgrestException catch (error) {
+            // context.showErrorSnackBar(message: error.message);
+            print("The error: $error");
+          } catch (error) {
+            print("The some error: $error");
+            // context.showErrorSnackBar(
+            //     message: 'Unexpeted error occurred');
+          }
+        }
+        await showDialog(
+          barrierDismissible: false,
+          context: context,
+          builder: ((context) {
+            return AlertDialog(
+              title: Text(playerWon ? 'You Won!' : 'You lost...'),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    Navigator.of(context).pop();
+                    await supabase.removeChannel(_gameChannel!);
+                    // _openLobbyDialog();
+                    Navigator.pushReplacement(
+                        context,
+                        CupertinoPageRoute(
+                          builder: (context) => HPage(),
+                        ));
+                  },
+                  child: Text(
+                    playerWon ? "Collect Reward" : 'Back to Lobby',
+                  ),
+                ),
+              ],
+            );
+          }),
+        );
+      },
+    );
+
+    // await for a frame so that the widget mounts
+    await Future.delayed(Duration.zero);
+
+    if (mounted) {
+      _openLobbyDialog();
+    }
+  }
+
+  void _openLobbyDialog() {
+    showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) {
+          return _LobbyDialog(
+            onGameStarted: (gameId) async {
+              // await a frame to allow subscribing to a new channel in a realtime callback
+              await Future.delayed(Duration.zero);
+
+              setState(() {});
+
+              _game.startNewGame();
+
+              _gameChannel = supabase.channel(
+                gameId,
+                opts: const RealtimeChannelConfig(ack: true),
+              );
+
+              _gameChannel!.on(RealtimeListenTypes.broadcast,
+                  ChannelFilter(event: 'game_state'), (payload, [_]) {
+                final position =
+                    Vector2(payload['x'] as double, payload['y'] as double);
+                final opponentHealth = payload['health'] as int;
+                _game.updateOpponent(
+                  position: position,
+                  health: opponentHealth,
+                );
+
+                if (opponentHealth <= 0) {
+                  if (!_game.isGameOver) {
+                    _game.isGameOver = true;
+                    _game.onGameOver(true);
+                  }
+                }
+              }).subscribe();
+            },
+          );
+        });
+  }
+}
+
+class _LobbyDialog extends StatefulWidget {
+  const _LobbyDialog({
+    required this.onGameStarted,
+  });
+
+  final void Function(String gameId) onGameStarted;
+
+  @override
+  State<_LobbyDialog> createState() => _LobbyDialogState();
+}
+
+class _LobbyDialogState extends State<_LobbyDialog> {
+  List<String> _userids = [];
+  bool _loading = false;
+
+  /// Unique identifier for each players to identify eachother in lobby
+  final myUserId = const Uuid().v4();
+
+  late final RealtimeChannel _lobbyChannel;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _lobbyChannel = supabase.channel(
+      'lobby',
+      opts: const RealtimeChannelConfig(self: true),
+    );
+    _lobbyChannel.on(RealtimeListenTypes.presence, ChannelFilter(event: 'sync'),
+        (payload, [ref]) {
+      // Update the lobby count
+      final presenceState = _lobbyChannel.presenceState();
+
+      setState(() {
+        _userids = presenceState.values
+            .map((presences) =>
+                (presences.first as Presence).payload['user_id'] as String)
+            .toList();
+        print("the user id is $presenceState");
+      });
+    }).on(RealtimeListenTypes.broadcast, ChannelFilter(event: 'game_start'),
+        (payload, [_]) {
+      // Start the game if someone has started a game with you
+      final participantIds = List<String>.from(payload['participants']);
+      if (participantIds.contains(myUserId)) {
+        final gameId = payload['game_id'] as String;
+        widget.onGameStarted(gameId);
+        Navigator.of(context).pop();
+      }
+    }).subscribe(
+      (status, [ref]) async {
+        if (status == 'SUBSCRIBED') {
+          await _lobbyChannel.track({'user_id': myUserId});
+        }
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    supabase.removeChannel(_lobbyChannel);
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text(
-              'You have pushed the button this many times:',
-            ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
+    return AlertDialog(
+      title: const Text('Lobby'),
+      content: _loading
+          ? const SizedBox(
+              height: 100,
+              child: Center(child: CircularProgressIndicator()),
+            )
+          : Text('${_userids.length} users waiting'),
+      actions: [
+        TextButton(
+          onPressed: _userids.length < 2
+              ? null
+              : () async {
+                  setState(() {
+                    _loading = true;
+                  });
+
+                  final opponentId =
+                      _userids.firstWhere((userId) => userId != myUserId);
+                  final gameId = const Uuid().v4();
+                  final updates = {
+                    "gameID": gameId,
+                  };
+                  try {
+                    await supabase.from('games').upsert(updates);
+                    if (mounted) {
+                      print("updates send to Supabase");
+                      // context.showSnackBar(
+                      //     message: 'Successfully updated profile!');
+                    }
+                  } on PostgrestException catch (error) {
+                    // context.showErrorSnackBar(message: error.message);
+                    print("The error: $error");
+                  } catch (error) {
+                    print("The some error: $error");
+                    // context.showErrorSnackBar(
+                    //     message: 'Unexpeted error occurred');
+                  }
+
+                  await _lobbyChannel.send(
+                    type: RealtimeListenTypes.broadcast,
+                    event: 'game_start',
+                    payload: {
+                      'participants': [
+                        opponentId,
+                        myUserId,
+                      ],
+                      'game_id': gameId,
+                    },
+                  );
+                },
+          child: const Text('start'),
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+      ],
     );
   }
 }
